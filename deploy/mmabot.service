@@ -1,0 +1,16 @@
+[Unit]
+Description=MMA Gym WhatsApp Bot
+After=network.target mysql.service
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/mmabot
+EnvironmentFile=/home/ubuntu/mmabot/.env
+ExecStart=/usr/bin/java -jar mmabot.jar
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
