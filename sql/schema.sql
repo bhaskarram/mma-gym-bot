@@ -119,3 +119,19 @@ CREATE TABLE IF NOT EXISTS class_feedback (
     PRIMARY KEY (id),
     CONSTRAINT fk_feedback_member FOREIGN KEY (member_id) REFERENCES members (id)
 );
+
+-- ── Multi-admin support ────────────────────────────────────────────────────────
+-- Admins who can access the Admin Panel via WhatsApp.
+-- Seed the primary admin here; add more with /addadmin command.
+CREATE TABLE IF NOT EXISTS admins (
+    id          BIGINT       NOT NULL AUTO_INCREMENT,
+    phone       VARCHAR(20)  NOT NULL,
+    name        VARCHAR(100) NOT NULL,
+    active      BOOLEAN      NOT NULL DEFAULT TRUE,
+    created_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_admin_phone (phone)
+) ENGINE=InnoDB;
+
+-- Seed the primary admin — replace with real phone + name before running on production
+-- INSERT IGNORE INTO admins (phone, name) VALUES ('916360914118', 'Bhaskar');

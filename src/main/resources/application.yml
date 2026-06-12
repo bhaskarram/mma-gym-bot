@@ -28,6 +28,9 @@ meta:
   api-url: https://graph.facebook.com/v21.0
 
 app:
+  # ADMIN_PHONE is used ONLY for scheduler notifications (daily summary, alerts).
+  # Admin access control is managed via the 'admins' DB table — not this env var.
+  # Seed your phone in the admins table on first deploy (see sql/schema.sql).
   admin-phone: ${ADMIN_PHONE}
   timezone: Asia/Kolkata
   checkin:

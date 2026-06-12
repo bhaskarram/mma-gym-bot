@@ -2,6 +2,7 @@ package com.mmagym.bot.service;
 
 import com.mmagym.bot.client.WhatsAppClient;
 import com.mmagym.bot.model.Member;
+import com.mmagym.bot.repository.AdminRepository;
 import com.mmagym.bot.repository.MemberRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -15,7 +16,7 @@ public class CommandRouter {
 
     private static final Logger log = LoggerFactory.getLogger(CommandRouter.class);
 
-    private final String adminPhone;
+    private final AdminRepository adminRepository;
     private final MemberRepository memberRepository;
     private final AttendanceService attendanceService;
     private final MemberService memberService;
@@ -25,7 +26,7 @@ public class CommandRouter {
     private final BotMetrics metrics;
     private final WhatsAppClient whatsApp;
 
-    public CommandRouter(@Value("${app.admin-phone}") String adminPhone,
+    public CommandRouter(AdminRepository adminRepository,
                          MemberRepository memberRepository,
                          AttendanceService attendanceService,
                          MemberService memberService,
@@ -34,7 +35,7 @@ public class CommandRouter {
                          EngagementService engagementService,
                          BotMetrics metrics,
                          WhatsAppClient whatsApp) {
-        this.adminPhone        = adminPhone;
+        this.adminRepository   = adminRepository;
         this.memberRepository  = memberRepository;
         this.attendanceService = attendanceService;
         this.memberService     = memberService;
@@ -68,7 +69,7 @@ public class CommandRouter {
         }
 
         String lower    = text.toLowerCase();
-        boolean isAdmin = adminPhone.equals(phone);
+        boolean isAdmin = adminRepository.existsByPhoneAndActiveTrue(phone);
 
         Optional<Member> memberOpt = memberRepository.findByPhone(phone);
 
@@ -89,8 +90,11 @@ public class CommandRouter {
                 case "/expiring"    -> adminService.expiringMembers(phone);
                 case "/summary"     -> adminService.summary(phone);
                 case "/mark"        -> adminService.markAttendance(phone, text);
-                case "/addmember"   -> adminService.startAddMember(phone);
-                case "/deactivate"  -> adminService.deactivate(phone, arg(text));
+                case "/addmember"    -> adminService.startAddMember(phone);
+                case "/deactivate"   -> adminService.deactivate(phone, arg(text));
+                case "/addadmin"     -> adminService.addAdmin(phone, arg(text));
+                case "/removeadmin"  -> adminService.removeAdmin(phone, arg(text));
+                case "/admins"       -> adminService.listAdmins(phone);
                 case "/capacity"    -> adminService.capacity(phone);
                 case "/defaulters"  -> adminService.defaulters(phone);
                 case "/leaderboard" -> adminService.leaderboard(phone);

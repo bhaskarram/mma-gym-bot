@@ -63,7 +63,16 @@ WhatsApp User
 
 ### Admin Identity
 
-Admin is identified **solely by phone number** (`ADMIN_PHONE` env var). There is no auth token or session. `CommandRouter` compares the sender's phone against this value on every message.
+Admin access is controlled via the **`admins` database table** — not a single env var. `CommandRouter` calls `adminRepository.existsByPhoneAndActiveTrue(phone)` on every message to check if the sender is an active admin.
+
+`ADMIN_PHONE` env var is still required but is now used **only** by `SchedulerService` for sending daily summary reports and alerts to the gym owner. It does NOT control admin panel access.
+
+**First-time setup:** Uncomment and run the seed INSERT in `sql/schema.sql` with your phone number to bootstrap the first admin. After that, use `/addadmin` and `/removeadmin` via WhatsApp to manage admins.
+
+**Admin commands for admin management:**
+- `/admins` — list all active admins
+- `/addadmin 919876543210 Coach Ravi` — grant admin access
+- `/removeadmin 919876543210` — revoke admin access
 
 ### Multi-Step Flows
 

@@ -22,7 +22,11 @@ public class AdminService {
 
     private static final DateTimeFormatter DOB_FMT = DateTimeFormatter.ofPattern("dd/MM/yyyy");
 
+    private static final int MAX_NAME_LEN   = 50;
+    private static final int MAX_NOTES_LEN  = 200;
+
     private final MemberRepository     memberRepo;
+    private final AdminRepository      adminRepo;
     private final AttendanceRepository attendanceRepo;
     private final GymClassRepository   gymClassRepo;
     private final AttendanceService    attendanceService;
@@ -32,6 +36,7 @@ public class AdminService {
     private final ZoneId               zoneId;
 
     public AdminService(MemberRepository memberRepo,
+                        AdminRepository adminRepo,
                         AttendanceRepository attendanceRepo,
                         GymClassRepository gymClassRepo,
                         AttendanceService attendanceService,
@@ -40,6 +45,7 @@ public class AdminService {
                         WhatsAppClient whatsApp,
                         @Value("${app.timezone}") String timezone) {
         this.memberRepo        = memberRepo;
+        this.adminRepo         = adminRepo;
         this.attendanceRepo    = attendanceRepo;
         this.gymClassRepo      = gymClassRepo;
         this.attendanceService = attendanceService;
@@ -269,8 +275,17 @@ public class AdminService {
 
         switch (session.action()) {
             case "ADD_MEMBER_NAME" -> {
+                String trimmedName = text.trim();
+                if (trimmedName.isBlank()) {
+                    whatsApp.sendText(phone, "Name cannot be empty. Enter the member's full name:");
+                    return;
+                }
+                if (trimmedName.length() > MAX_NAME_LEN) {
+                    whatsApp.sendText(phone, "Name is too long (max " + MAX_NAME_LEN + " characters). Please re-enter:");
+                    return;
+                }
                 Map<String, String> d1 = new HashMap<>();
-                d1.put("name", text.trim());
+                d1.put("name", trimmedName);
                 sessionService.put(phone, "ADD_MEMBER_PHONE", d1);
                 whatsApp.sendText(phone, "Enter phone number (with country code, e.g. 919876543210):");
             }
@@ -568,6 +583,78 @@ public class AdminService {
         for (Member m : defaulters)
             sb.append("• ").append(m.getName()).append(" | ").append(m.getPaymentStatus())
               .append(" | Exp: ").append(m.getPlanExpiry()).append("\n");
+        whatsApp.sendText(phone, sb.toString().trim());
+    }
+
+    // ─── /addadmin [phone] [name] ─────────────────────────────────────────────
+
+    @Transactional
+    public void addAdmin(String callerPhone, String args) {
+        // args: "919876543210 Coach Ravi"
+        String[] parts = args.trim().split("\\s+", 2);
+        if (parts.length < 2 || parts[0].isBlank() || parts[1].isBlank()) {
+            whatsApp.sendText(callerPhone, "Usage: /addadmin [phone with country code] [name]\nExample: /addadmin 919876543210 Coach Ravi");
+            return;
+        }
+        String newPhone = parts[0].replaceAll("\\D", "");
+        String newName  = parts[1].trim();
+        if (newPhone.length() < 10 || newPhone.length() > 15) {
+            whatsApp.sendText(callerPhone, "❌ Invalid phone number. Must be 10–15 digits with country code.");
+            return;
+        }
+        if (newName.length() > MAX_NAME_LEN) {
+            whatsApp.sendText(callerPhone, "❌ Name too long (max " + MAX_NAME_LEN + " characters).");
+            return;
+        }
+        if (adminRepo.existsByPhoneAndActiveTrue(newPhone)) {
+            whatsApp.sendText(callerPhone, "⚠️ " + newPhone + " is already an admin.");
+            return;
+        }
+        adminRepo.save(new Admin(newPhone, newName));
+        whatsApp.sendText(callerPhone, "✅ *" + newName + "* (" + newPhone + ") added as admin.");
+        whatsApp.sendText(newPhone,
+                "🛡️ You've been granted *Admin access* to the MMA Gym Bot.\n\n" +
+                "Say *hi* or *menu* to open the Admin Panel.");
+    }
+
+    // ─── /removeadmin [phone] ─────────────────────────────────────────────────
+
+    @Transactional
+    public void removeAdmin(String callerPhone, String args) {
+        String targetPhone = args.trim().replaceAll("\\D", "");
+        if (targetPhone.isBlank()) {
+            whatsApp.sendText(callerPhone, "Usage: /removeadmin [phone with country code]");
+            return;
+        }
+        if (targetPhone.equals(callerPhone)) {
+            whatsApp.sendText(callerPhone, "❌ You cannot remove yourself as admin.");
+            return;
+        }
+        Admin a = adminRepo.findByPhoneAndActiveTrue(targetPhone).orElse(null);
+        if (a == null) {
+            whatsApp.sendText(callerPhone, "No active admin found with phone: " + targetPhone);
+            return;
+        }
+        a.setActive(false);
+        adminRepo.save(a);
+        whatsApp.sendText(callerPhone, "✅ Admin access removed for *" + a.getName() + "* (" + targetPhone + ").");
+        whatsApp.sendText(targetPhone, "ℹ️ Your admin access to the gym bot has been removed. Contact the gym owner for more info.");
+    }
+
+    // ─── /admins ──────────────────────────────────────────────────────────────
+
+    @Transactional(readOnly = true)
+    public void listAdmins(String phone) {
+        List<Admin> admins = adminRepo.findAllByActiveTrue();
+        if (admins.isEmpty()) { whatsApp.sendText(phone, "No admins found."); return; }
+        StringBuilder sb = new StringBuilder("🛡️ *Active Admins (" + admins.size() + ")*\n\n");
+        for (int i = 0; i < admins.size(); i++) {
+            Admin a = admins.get(i);
+            sb.append(i + 1).append(". ").append(a.getName())
+              .append(" | ").append(a.getPhone())
+              .append(" | Since: ").append(a.getCreatedAt().toLocalDate())
+              .append("\n");
+        }
         whatsApp.sendText(phone, sb.toString().trim());
     }
 }
