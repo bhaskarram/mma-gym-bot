@@ -12,10 +12,15 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.time.format.TextStyle;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 @Service
 public class SchedulerService {
@@ -43,110 +48,228 @@ public class SchedulerService {
         this.zoneId         = ZoneId.of(timezone);
     }
 
-    // 6 AM daily — class reminder to all active members
+    // ── 6 AM daily — one consolidated class reminder per member ───────────────
     @Scheduled(cron = "0 0 6 * * *", zone = "Asia/Kolkata")
     public void sendClassReminders() {
-        LocalDate today = LocalDate.now(zoneId);
-        int isoDay = today.getDayOfWeek().getValue();
+        LocalDate today  = LocalDate.now(zoneId);
+        int isoDay       = today.getDayOfWeek().getValue();
         List<GymClass> classes = gymClassRepo.findByDayOfWeekAndIsActiveTrue(isoDay);
         if (classes.isEmpty()) return;
 
-        List<Member> active = memberRepo.findByStatus(Member.MemberStatus.ACTIVE);
+        // FIX: use findActivePaidMembers() — expired members don't get reminders
+        List<Member> active = memberRepo.findActivePaidMembers();
+
+        // FIX: one message per member (not one per class) — avoids Meta rate limits
         for (Member m : active) {
-            if (m.getPaymentStatus() != Member.PaymentStatus.PAID) continue;
-            for (GymClass gc : classes) {
-                whatsApp.sendText(m.getPhone(),
-                        "Hey " + m.getName() + "! " + gc.getClassName() +
-                        " starts at " + gc.getClassTime() + " today. See you on the mat 🥊");
-            }
+            StringBuilder sb = new StringBuilder("🥊 Hey " + m.getName() + "! Today's classes:\n\n");
+            classes.stream()
+                   .sorted((a, b) -> a.getClassTime().compareTo(b.getClassTime()))
+                   .forEach(gc -> sb.append("  🕐 ")
+                           .append(gc.getClassTime())
+                           .append(" – ").append(gc.getClassEndTime())
+                           .append("  ").append(gc.getClassName()).append("\n"));
+            sb.append("\nSee you on the mat! 💪");
+            whatsApp.sendText(m.getPhone(), sb.toString().trim());
         }
-        log.info("Class reminders sent to {} active members", active.size());
+        log.info("Class reminders sent to {} members", active.size());
     }
 
-    // 9 AM daily — payment expiry warnings (7-day, 1-day, expired) in one pass
+    // ── 9 AM daily — payment expiry warnings in one pass ─────────────────────
     @Scheduled(cron = "0 0 9 * * *", zone = "Asia/Kolkata")
+    @Transactional
     public void sendPaymentWarnings() {
         LocalDate today = LocalDate.now(zoneId);
-        List<Member> expiring7 = memberRepo.findExpiringBetween(today.plusDays(7), today.plusDays(7));
-        List<Member> expiring1 = memberRepo.findExpiringBetween(today.plusDays(1), today.plusDays(1));
-        List<Member> expiredToday = memberRepo.findExpiringBetween(today, today);
 
-        for (Member m : expiring7) {
-            String msg = m.getName() + ", your plan expires on " + m.getPlanExpiry() +
-                         " — 7 days left. Contact admin to renew.";
-            whatsApp.sendText(m.getPhone(), msg);
-            whatsApp.sendText(adminPhone, "[Renewal Reminder] " + msg);
+        for (Member m : memberRepo.findExpiringBetween(today.plusDays(7), today.plusDays(7))) {
+            whatsApp.sendText(m.getPhone(),
+                    "⏳ " + m.getName() + ", your plan expires on " + m.getPlanExpiry() +
+                    " — 7 days left. Contact admin to renew.");
+            whatsApp.sendText(adminPhone,
+                    "[Renewal] " + m.getName() + " expires in 7 days (" + m.getPlanExpiry() + ")");
         }
-        for (Member m : expiring1) {
-            String msg = "Final reminder — " + m.getName() + "'s plan expires tomorrow. Please renew today.";
-            whatsApp.sendText(m.getPhone(), msg);
-            whatsApp.sendText(adminPhone, "[Renewal Reminder] " + msg);
+
+        for (Member m : memberRepo.findExpiringBetween(today.plusDays(1), today.plusDays(1))) {
+            whatsApp.sendText(m.getPhone(),
+                    "🚨 Final reminder — your plan expires tomorrow. Please renew today.");
+            whatsApp.sendText(adminPhone,
+                    "[Urgent] " + m.getName() + " expires tomorrow");
         }
-        for (Member m : expiredToday) {
+
+        // FIX: set both paymentStatus AND mark for exclusion from active queries
+        for (Member m : memberRepo.findExpiringBetween(today, today)) {
             m.setPaymentStatus(Member.PaymentStatus.EXPIRED);
             memberRepo.save(m);
             whatsApp.sendText(m.getPhone(),
-                    "Your plan expired today. You won't be able to check in. Contact admin to renew.");
+                    "❌ Your plan expired today. You won't be able to check in. Contact admin to renew 🙏");
+            whatsApp.sendText(adminPhone,
+                    "[Expired] " + m.getName() + "'s plan expired today");
         }
     }
 
-    // 10 AM daily — alert admin about members missing 5+ consecutive days
+    // ── 5:30 AM daily — birthday shoutouts ───────────────────────────────────
+    @Scheduled(cron = "0 30 5 * * *", zone = "Asia/Kolkata")
+    public void sendBirthdayShoutouts() {
+        LocalDate today = LocalDate.now(zoneId);
+        List<Member> birthdays = memberRepo.findByDobMonthAndDay(today.getMonthValue(), today.getDayOfMonth());
+        if (birthdays.isEmpty()) return;
+
+        List<Member> allActive = memberRepo.findActivePaidMembers();
+
+        for (Member bday : birthdays) {
+            whatsApp.sendText(bday.getPhone(),
+                    "🎂 Happy Birthday, " + bday.getName() + "! " +
+                    "Wishing you strength, speed, and another year of gains 🥊");
+
+            String classmate = "🎂 Today is " + bday.getName() + "'s birthday! " +
+                               "Wish them well when you see them at the gym 🙌";
+            for (Member m : allActive) {
+                if (!m.getPhone().equals(bday.getPhone())) {
+                    whatsApp.sendText(m.getPhone(), classmate);
+                }
+            }
+
+            whatsApp.sendText(adminPhone,
+                    "🎂 Birthday today: " + bday.getName() +
+                    " (joined " + bday.getJoinDate() + "). Consider a free class or gift.");
+        }
+        log.info("Birthday shoutouts sent for {} member(s)", birthdays.size());
+    }
+
+    // ── 10 AM daily — comeback nudge + admin alert for long absentees ─────────
     @Scheduled(cron = "0 0 10 * * *", zone = "Asia/Kolkata")
+    @Transactional
     public void sendMissedClassAlerts() {
         LocalDate today  = LocalDate.now(zoneId);
-        LocalDate cutoff = today.minusDays(5);
-        List<Member> active = memberRepo.findByStatus(Member.MemberStatus.ACTIVE);
-        StringBuilder sb = new StringBuilder();
+        LocalDate cutoff = today.minusDays(7);
+
+        // FIX: use findActivePaidMembers — expired members don't get nudges
+        List<Member> active = memberRepo.findActivePaidMembers();
+        StringBuilder adminSb = new StringBuilder();
+
+        // Collect all class days in the window (Mon–Sat)
+        List<LocalDate> windowClassDays = cutoff.datesUntil(today)
+                .filter(d -> d.getDayOfWeek().getValue() <= 6)
+                .toList();
 
         for (Member m : active) {
-            List<Attendance> recent = attendanceRepo
-                    .findByMemberAndClassDateBetweenOrderByClassDateAsc(m, cutoff, today);
-            boolean anyPresent = recent.stream()
-                    .anyMatch(a -> a.getStatus() == Attendance.AttendanceStatus.PRESENT);
-            if (!anyPresent) {
+            // FIX: bulk fetch all present dates in one query (not N+1 existsBy calls)
+            Set<LocalDate> presentDays = new HashSet<>(
+                    attendanceRepo.findPresentDatesBetween(m, cutoff, today));
+
+            long classDaysMissed = windowClassDays.stream()
+                    .filter(d -> !presentDays.contains(d))
+                    .count();
+
+            if (classDaysMissed >= 3) {
+                LocalDate lastNudge = m.getLastNudgeDate();
+                boolean alreadyNudged = lastNudge != null && lastNudge.isAfter(today.minusDays(7));
+                if (!alreadyNudged) {
+                    LocalDate tomorrow = today.plusDays(1);
+                    int tmrDay = tomorrow.getDayOfWeek().getValue();
+                    List<GymClass> tmrClasses = gymClassRepo.findByDayOfWeekAndIsActiveTrue(tmrDay);
+                    String classLine = tmrClasses.isEmpty() ? "your next session"
+                            : tmrClasses.get(0).getClassName() + " at " + tmrClasses.get(0).getClassTime();
+                    whatsApp.sendText(m.getPhone(),
+                            "Hey " + m.getName() + ", we haven't seen you in a few days 👊\n" +
+                            "Tomorrow is " + classLine + " — come back and get on the mat!");
+                    m.setLastNudgeDate(today);
+                    memberRepo.save(m);
+                }
+            }
+
+            if (classDaysMissed >= 5) {
                 List<Attendance> all = attendanceRepo.findAllByMemberOrderByDateDesc(m);
                 String lastSeen = all.stream()
                         .filter(a -> a.getStatus() == Attendance.AttendanceStatus.PRESENT)
                         .findFirst()
                         .map(a -> a.getClassDate().toString())
                         .orElse("never");
-                sb.append("• ").append(m.getName()).append(" — last seen: ").append(lastSeen).append("\n");
+                adminSb.append("• ").append(m.getName()).append(" — last seen: ").append(lastSeen).append("\n");
             }
         }
-        if (!sb.isEmpty()) {
+
+        if (!adminSb.isEmpty()) {
             whatsApp.sendText(adminPhone,
-                    "⚠️ Members absent 5+ consecutive days:\n\n" + sb.toString().trim());
+                    "⚠️ Members absent 5+ consecutive class days:\n\n" + adminSb.toString().trim());
         }
     }
 
-    // 8 PM daily — check-in summary to admin
+    // ── 9 PM last day of month — monthly leaderboard broadcast ───────────────
+    @Scheduled(cron = "0 0 21 L * *", zone = "Asia/Kolkata")
+    public void sendMonthlyLeaderboard() {
+        LocalDate today = LocalDate.now(zoneId);
+        String msg = buildLeaderboard(today.getYear(), today.getMonthValue(), today);
+        if (msg == null) return;
+        List<Member> allActive = memberRepo.findActivePaidMembers();
+        for (Member m : allActive) whatsApp.sendText(m.getPhone(), msg);
+        log.info("Monthly leaderboard sent to {} members", allActive.size());
+    }
+
+    /** Shared leaderboard builder — used by scheduler and admin on-demand. */
+    public String buildLeaderboard(int year, int month, LocalDate today) {
+        List<Object[]> top = attendanceRepo.findTopAttendersForMonth(year, month, 10);
+        if (top.isEmpty()) return null;
+
+        LocalDate first      = LocalDate.of(year, month, 1);
+        LocalDate countUntil = (today.getYear() == year && today.getMonthValue() == month)
+                               ? today : first.withDayOfMonth(first.lengthOfMonth());
+        long totalClassDays  = first.datesUntil(countUntil.plusDays(1))
+                .filter(d -> d.getDayOfWeek().getValue() <= 6)
+                .count();
+
+        String monthName = first.getMonth().getDisplayName(TextStyle.FULL, Locale.ENGLISH);
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("🏆 *").append(monthName).append(" ").append(year).append(" Leaderboard* 🏆\n\n");
+
+        String[] medals = {"🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"};
+        for (int i = 0; i < top.size(); i++) {
+            Long memberId = ((Number) top.get(i)[0]).longValue();
+            long count    = ((Number) top.get(i)[top.get(i).length - 1]).longValue();
+            final int idx = i;
+            final long c  = count;
+            memberRepo.findById(memberId).ifPresent(m -> {
+                int pct = totalClassDays == 0 ? 0 : (int) Math.round(c * 100.0 / totalClassDays);
+                sb.append(medals[idx]).append(" *").append(m.getName()).append("*")
+                  .append(" — ").append(c).append(" days (").append(pct).append("%)\n");
+            });
+        }
+        sb.append("\n💪 Keep showing up — consistency is the secret!");
+        return sb.toString().trim();
+    }
+
+    // ── 8 PM daily — check-in summary to admin ───────────────────────────────
     @Scheduled(cron = "0 0 20 * * *", zone = "Asia/Kolkata")
     public void sendDailySummary() {
-        LocalDate today = LocalDate.now(zoneId);
-        long active   = memberRepo.findByStatus(Member.MemberStatus.ACTIVE).size();
-        long checkins = attendanceRepo.countPresentOnDate(today);
+        LocalDate today  = LocalDate.now(zoneId);
+        long active      = memberRepo.findActivePaidMembers().size();
+        long checkins    = attendanceRepo.countPresentOnDate(today);
         whatsApp.sendText(adminPhone,
                 "📊 Daily Summary — " + today + "\n" +
                 "✅ Check-ins: " + checkins + " / " + active + " active members");
     }
 
-    // 8 AM on the 1st of each month — monthly report to admin
+    // ── 8 AM on 1st of month — monthly report to admin ───────────────────────
     @Scheduled(cron = "0 0 8 1 * *", zone = "Asia/Kolkata")
     public void sendMonthlyReport() {
-        LocalDate today = LocalDate.now(zoneId);
-        List<Member> active = memberRepo.findByStatus(Member.MemberStatus.ACTIVE);
-        long expired = memberRepo.findDefaulters().size();
+        LocalDate today     = LocalDate.now(zoneId);
+        // FIX: use lastMonth for both name AND year (fixes January bug)
+        LocalDate lastMonth = today.minusMonths(1);
+        String monthName    = lastMonth.getMonth().getDisplayName(TextStyle.FULL, Locale.ENGLISH);
+
+        List<Member> active = memberRepo.findActivePaidMembers();
+        long expired        = memberRepo.findDefaulters().size();
 
         long totalPresent = 0;
         for (Member m : active) {
             totalPresent += attendanceRepo.countPresentInMonth(
-                    m, today.minusMonths(1).getYear(), today.minusMonths(1).getMonthValue());
+                    m, lastMonth.getYear(), lastMonth.getMonthValue());
         }
         int avgPct = active.isEmpty() ? 0
-                : (int) Math.round(totalPresent * 100.0 / (active.size() * 30.0));
+                : (int) Math.round(totalPresent * 100.0 / (active.size() * 26.0)); // 26 class days/month avg
 
         whatsApp.sendText(adminPhone,
-                "📅 Monthly Report — " + today.getMonth().minus(1) + " " + today.getYear() + "\n\n" +
+                "📅 *Monthly Report — " + monthName + " " + lastMonth.getYear() + "*\n\n" +
                 "👥 Active members: " + active.size() + "\n" +
                 "📊 Avg attendance: " + avgPct + "%\n" +
                 "⚠️  Expired/defaulters: " + expired);

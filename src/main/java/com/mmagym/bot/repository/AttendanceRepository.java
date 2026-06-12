@@ -32,4 +32,22 @@ public interface AttendanceRepository extends JpaRepository<Attendance, Long> {
         ORDER BY a.classDate DESC
         """)
     List<Attendance> findAllByMemberOrderByDateDesc(Member member);
+
+    @Query("SELECT COUNT(a) FROM Attendance a WHERE a.member = :member AND a.status = 'PRESENT'")
+    long countAllPresentForMember(Member member);
+
+    /** Bulk fetch — avoids N+1 queries in scheduler. Returns all present dates for a member in a range. */
+    @Query("SELECT a.classDate FROM Attendance a WHERE a.member = :member AND a.classDate BETWEEN :from AND :to AND a.status = 'PRESENT'")
+    List<LocalDate> findPresentDatesBetween(Member member, LocalDate from, LocalDate to);
+
+    @Query(value = """
+        SELECT m.*, COUNT(a.id) as cnt
+        FROM attendance a
+        JOIN members m ON a.member_id = m.id
+        WHERE YEAR(a.class_date) = :year AND MONTH(a.class_date) = :month AND a.status = 'PRESENT'
+        GROUP BY a.member_id
+        ORDER BY cnt DESC
+        LIMIT :limit
+        """, nativeQuery = true)
+    List<Object[]> findTopAttendersForMonth(int year, int month, int limit);
 }

@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <springProperty scope="context" name="APP_LOG_DIR" source="app.log.dir" defaultValue="logs"/>
+
+    <!-- ── Patterns ─────────────────────────────────────────────────────── -->
+    <property name="CONSOLE_PATTERN"
+              value="%d{HH:mm:ss.SSS} %highlight(%-5level) %cyan(%-30logger{30}) : %msg%n"/>
+    <property name="FILE_PATTERN"
+              value="%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %-40logger{40} : %msg%n"/>
+
+    <!-- ── Console (all levels) ──────────────────────────────────────────── -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${CONSOLE_PATTERN}</pattern>
+        </encoder>
+    </appender>
+
+    <!-- ── Rolling file — INFO and above ────────────────────────────────── -->
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${APP_LOG_DIR}/mmabot.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <!-- Daily rollover, keep 30 days, max 500 MB total -->
+            <fileNamePattern>${APP_LOG_DIR}/mmabot.%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>500MB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${FILE_PATTERN}</pattern>
+        </encoder>
+        <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+            <level>INFO</level>
+        </filter>
+    </appender>
+
+    <!-- ── Error-only file ───────────────────────────────────────────────── -->
+    <appender name="ERROR_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${APP_LOG_DIR}/mmabot-errors.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${APP_LOG_DIR}/mmabot-errors.%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>90</maxHistory>
+            <totalSizeCap>100MB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${FILE_PATTERN}</pattern>
+        </encoder>
+        <filter class="ch.qos.logback.classic.filter.LevelFilter">
+            <level>ERROR</level>
+            <onMatch>ACCEPT</onMatch>
+            <onMismatch>DENY</onMismatch>
+        </filter>
+    </appender>
+
+    <!-- ── Async wrapper for file (non-blocking) ─────────────────────────── -->
+    <appender name="ASYNC_FILE" class="ch.qos.logback.classic.AsyncAppender">
+        <appender-ref ref="FILE"/>
+        <queueSize>512</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+    </appender>
+
+    <!-- ── Package-level log levels ─────────────────────────────────────── -->
+    <!-- Bot code: INFO in prod, DEBUG in dev -->
+    <springProfile name="!dev">
+        <logger name="com.mmagym.bot" level="INFO"/>
+    </springProfile>
+    <springProfile name="dev">
+        <logger name="com.mmagym.bot" level="DEBUG"/>
+    </springProfile>
+
+    <!-- Silence noisy Spring internals -->
+    <logger name="org.springframework.web"              level="WARN"/>
+    <logger name="org.springframework.orm.jpa"         level="WARN"/>
+    <logger name="org.hibernate.SQL"                   level="WARN"/>
+    <logger name="org.hibernate.type.descriptor.sql"   level="WARN"/>
+    <logger name="com.zaxxer.hikari"                   level="WARN"/>
+
+    <!-- ── Root ─────────────────────────────────────────────────────────── -->
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="ASYNC_FILE"/>
+        <appender-ref ref="ERROR_FILE"/>
+    </root>
+
+</configuration>

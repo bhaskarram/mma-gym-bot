@@ -21,6 +21,8 @@ public class CommandRouter {
     private final MemberService memberService;
     private final AdminService adminService;
     private final SessionService sessionService;
+    private final EngagementService engagementService;
+    private final BotMetrics metrics;
     private final WhatsAppClient whatsApp;
 
     public CommandRouter(@Value("${app.admin-phone}") String adminPhone,
@@ -29,6 +31,8 @@ public class CommandRouter {
                          MemberService memberService,
                          AdminService adminService,
                          SessionService sessionService,
+                         EngagementService engagementService,
+                         BotMetrics metrics,
                          WhatsAppClient whatsApp) {
         this.adminPhone        = adminPhone;
         this.memberRepository  = memberRepository;
@@ -36,45 +40,70 @@ public class CommandRouter {
         this.memberService     = memberService;
         this.adminService      = adminService;
         this.sessionService    = sessionService;
+        this.engagementService = engagementService;
+        this.metrics           = metrics;
         this.whatsApp          = whatsApp;
     }
 
-    public void route(String phone, String text) {
-        log.info("Message from {}: {}", phone, text);
+    /** Mask phone for logs: 919876543210 → 91XXXXX3210 */
+    private static String mask(String phone) {
+        if (phone == null || phone.length() < 6) return "XXXXX";
+        return phone.substring(0, 2) + "XXXXX" + phone.substring(phone.length() - 4);
+    }
 
-        // If we're mid multi-step flow, continue it
+    public void route(String phone, String text) {
+        metrics.messageReceived();
+        log.info("MSG from={} cmd={}", mask(phone), text);
+
+        // Mid multi-step flow
         if (sessionService.has(phone)) {
+            SessionService.Session session = sessionService.get(phone);
+            if ("FEEDBACK_PENDING".equals(session.action())) {
+                Optional<Member> fm = memberRepository.findByPhone(phone);
+                fm.ifPresent(member -> engagementService.handleFeedbackReply(phone, member, text));
+                return;
+            }
             adminService.continueSession(phone, text);
             return;
         }
 
-        String lower   = text.toLowerCase();
+        String lower    = text.toLowerCase();
         boolean isAdmin = adminPhone.equals(phone);
 
         Optional<Member> memberOpt = memberRepository.findByPhone(phone);
 
         if (memberOpt.isEmpty() && !isAdmin) {
-            whatsApp.sendText(phone,
-                    "You're not registered at this gym. Ask your coach to add you.");
+            log.warn("Unregistered contact from={}", mask(phone));
+            whatsApp.sendText(phone, "You're not registered at this gym. Ask your coach to add you.");
             return;
         }
 
-        // Admin-only commands
         if (isAdmin) {
+            metrics.adminCommand();
+            log.info("ADMIN cmd={}", lower.split("\\s+")[0]);
             switch (lower.split("\\s+")[0]) {
-                case "/users"      -> adminService.listUsers(phone);
-                case "/user"       -> adminService.getUser(phone, arg(text));
-                case "/attendance" -> adminService.memberAttendance(phone, arg(text));
-                case "/missed"     -> adminService.missedMembers(phone);
-                case "/expiring"   -> adminService.expiringMembers(phone);
-                case "/summary"    -> adminService.summary(phone);
-                case "/mark"       -> adminService.markAttendance(phone, text);
-                case "/promote"    -> adminService.promote(phone, text);
-                case "/addmember"  -> adminService.startAddMember(phone);
-                case "/deactivate" -> adminService.deactivate(phone, arg(text));
-                case "/capacity"   -> adminService.capacity(phone);
-                case "/defaulters" -> adminService.defaulters(phone);
-                default -> routeMemberCommand(phone, lower, text, memberOpt.orElse(null));
+                case "/users"       -> adminService.listUsers(phone);
+                case "/user"        -> adminService.getUser(phone, arg(text));
+                case "/attendance"  -> adminService.memberAttendance(phone, arg(text));
+                case "/missed"      -> adminService.missedMembers(phone);
+                case "/expiring"    -> adminService.expiringMembers(phone);
+                case "/summary"     -> adminService.summary(phone);
+                case "/mark"        -> adminService.markAttendance(phone, text);
+                case "/addmember"   -> adminService.startAddMember(phone);
+                case "/deactivate"  -> adminService.deactivate(phone, arg(text));
+                case "/capacity"    -> adminService.capacity(phone);
+                case "/defaulters"  -> adminService.defaulters(phone);
+                case "/leaderboard" -> adminService.leaderboard(phone);
+                case "/feedback"    -> engagementService.viewFeedback(phone);
+                case "/botstats"    -> whatsApp.sendText(phone, metrics.snapshot());
+                case "hi", "hello", "hey", "menu", "start" -> whatsApp.sendAdminMenu(phone);
+                case "menu_mark"       -> adminService.startMarkPrompt(phone);
+                case "menu_attendance" -> adminService.startAttendancePrompt(phone);
+                case "menu_renew"      -> adminService.startRenewPrompt(phone);
+                default -> {
+                    log.warn("Unknown admin command={}", lower.split("\\s+")[0]);
+                    whatsApp.sendAdminMenu(phone);
+                }
             }
             return;
         }
@@ -87,16 +116,17 @@ public class CommandRouter {
             whatsApp.sendText(phone, "You're not registered. Contact your coach.");
             return;
         }
+        metrics.memberCommand();
         switch (lower.split("\\s+")[0]) {
-            case "/checkin"        -> attendanceService.checkIn(phone, member);
-            case "/mystats"        -> memberService.myStats(phone, member);
-            case "/streak"         -> memberService.myStreak(phone, member);
-            case "/mypayment"      -> memberService.myPayment(phone, member);
-            case "/myrank"         -> memberService.myRank(phone, member);
-            case "/schedule"       -> memberService.schedule(phone);
-            case "/progress"       -> memberService.progress(phone, member, text);
-            case "/help"           -> memberService.help(phone);
-            default                -> whatsApp.sendText(phone, "Unknown command. Send /help for the list.");
+            case "/checkin"   -> attendanceService.checkIn(phone, member);
+            case "/mystats"   -> memberService.myStats(phone, member);
+            case "/streak"    -> engagementService.myStreak(phone, member);
+            case "/weight"    -> engagementService.logWeight(phone, member, text);
+            case "/mypayment" -> memberService.myPayment(phone, member);
+            case "/schedule"  -> memberService.schedule(phone, text);
+            case "/progress"  -> memberService.progress(phone, member, text);
+            case "/help", "hi", "hello", "hey", "menu", "start" -> whatsApp.sendMenu(phone);
+            default           -> whatsApp.sendMenu(phone);
         }
     }
 

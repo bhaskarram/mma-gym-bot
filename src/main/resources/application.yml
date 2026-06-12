@@ -3,7 +3,7 @@ spring:
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:mysql://localhost:3306/mmagym?useSSL=false&serverTimezone=Asia/Kolkata&allowPublicKeyRetrieval=true}
     username: ${SPRING_DATASOURCE_USERNAME:mmagym_user}
-    password: ${SPRING_DATASOURCE_PASSWORD:changeme}
+    password: ${SPRING_DATASOURCE_PASSWORD}
     driver-class-name: com.mysql.cj.jdbc.Driver
   jpa:
     hibernate:
@@ -22,6 +22,7 @@ server:
 
 meta:
   access-token: ${META_ACCESS_TOKEN}
+  app-secret: ${META_APP_SECRET}
   phone-number-id: ${META_PHONE_NUMBER_ID}
   verify-token: ${META_VERIFY_TOKEN}
   api-url: https://graph.facebook.com/v21.0
@@ -31,3 +32,28 @@ app:
   timezone: Asia/Kolkata
   checkin:
     window-minutes: 30
+  log:
+    dir: ${LOG_DIR:logs}
+
+# ── Actuator ──────────────────────────────────────────────────────────────────
+management:
+  endpoints:
+    web:
+      exposure:
+        # loggers excluded — prevents runtime log-level tampering via HTTP
+        include: health,info,metrics
+      base-path: /manage
+  endpoint:
+    health:
+      # show-details only to localhost (Nginx blocks /manage from public)
+      show-details: always
+  info:
+    env:
+      enabled: true
+
+# ── App info (shown at /manage/info) ──────────────────────────────────────────
+info:
+  app:
+    name: MMA Gym Bot
+    version: 1.0.0
+    description: WhatsApp bot for gym attendance, plans and engagement

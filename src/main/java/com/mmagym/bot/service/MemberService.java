@@ -20,6 +20,7 @@ import java.util.List;
 @Service
 public class MemberService {
 
+    // index 0 unused; ISO weekday: 1=Mon … 7=Sun
     private static final String[] DAY_NAMES = {"", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
 
     private final AttendanceRepository attendanceRepo;
@@ -44,26 +45,93 @@ public class MemberService {
     }
 
     public void myStats(String phone, Member member) {
-        LocalDate now   = LocalDate.now(zoneId);
-        long present    = attendanceRepo.countPresentInMonth(member, now.getYear(), now.getMonthValue());
-        long daysInMonth = now.lengthOfMonth();
-        long missed      = daysInMonth - present;
-        int  pct         = (int) Math.round(present * 100.0 / Math.max(daysInMonth, 1));
+        LocalDate today   = LocalDate.now(zoneId);
+        LocalDate firstDay = today.withDayOfMonth(1);
+        LocalDate lastDay  = today.withDayOfMonth(today.lengthOfMonth());
 
-        whatsApp.sendText(phone,
-                "📊 Your stats for " + now.getMonth().name() + " " + now.getYear() + ":\n" +
-                "✅ Present: " + present + " days\n" +
-                "❌ Missed: " + missed + " days\n" +
-                "📈 Attendance: " + pct + "%");
-    }
+        // Fetch all attendance records for this month
+        List<Attendance> records = attendanceRepo
+                .findByMemberAndClassDateBetweenOrderByClassDateAsc(member, firstDay, lastDay);
 
-    public void myStreak(String phone, Member member) {
-        long streak = attendanceService.computeStreak(member);
-        if (streak == 0) {
-            whatsApp.sendText(phone, "No current streak. Check in today to start one! 💪");
-        } else {
-            whatsApp.sendText(phone, "🔥 Current streak: " + streak + " consecutive days!");
+        // Build a map: date → status
+        java.util.Map<LocalDate, Attendance.AttendanceStatus> statusMap = new java.util.LinkedHashMap<>();
+        for (Attendance a : records) {
+            statusMap.put(a.getClassDate(), a.getStatus());
         }
+
+        // Counters
+        int present = 0, absent = 0, late = 0;
+
+        // Build calendar: week rows (Mon–Sun), Sun = rest
+        String monthName = today.getMonth().getDisplayName(
+                java.time.format.TextStyle.FULL, java.util.Locale.ENGLISH);
+        StringBuilder sb = new StringBuilder();
+        sb.append("📅 *").append(member.getName()).append(" — ").append(monthName).append(" ").append(today.getYear()).append("*\n\n");
+        sb.append("Mo Tu We Th Fr Sa  Su\n");
+
+        // Start at first day of month; pad empty cells before
+        java.time.DayOfWeek firstDow = firstDay.getDayOfWeek(); // MON=1 … SUN=7
+        int startPad = firstDow.getValue() - 1; // 0-based padding before day 1
+
+        int col = 0;
+        // Leading spaces
+        for (int i = 0; i < startPad; i++) {
+            sb.append("   ");
+            col++;
+            if (col == 6) { sb.append("  "); } // extra gap before Sunday column
+        }
+
+        for (LocalDate d = firstDay; !d.isAfter(lastDay); d = d.plusDays(1)) {
+            boolean isSunday = d.getDayOfWeek().getValue() == 7;
+            boolean isFuture = d.isAfter(today);
+
+            String cell;
+            if (isSunday) {
+                cell = "🌙"; // rest day
+            } else if (isFuture) {
+                cell = "⬜"; // not yet
+            } else {
+                Attendance.AttendanceStatus st = statusMap.get(d);
+                if (st == null) {
+                    // class day in the past with no record = absent
+                    cell = "❌";
+                    absent++;
+                } else {
+                    switch (st) {
+                        case PRESENT -> { cell = "✅"; present++; }
+                        case LATE    -> { cell = "🟡"; late++; }
+                        default      -> { cell = "❌"; absent++; }
+                    }
+                }
+            }
+
+            // Add gap before Sunday column for readability
+            if (col == 6) sb.append(" ");
+            sb.append(cell);
+            col++;
+
+            if (col == 7) {
+                sb.append("\n");
+                col = 0;
+            } else {
+                sb.append(" ");
+            }
+        }
+
+        // Summary line
+        int classDays = present + absent + late;
+        int pct = classDays == 0 ? 0 : (int) Math.round(present * 100.0 / classDays);
+
+        sb.append("\n");
+        sb.append("✅ Present: ").append(present)
+          .append("  🟡 Late: ").append(late)
+          .append("  ❌ Absent: ").append(absent).append("\n");
+        sb.append("📈 Attendance: ").append(pct).append("% this month");
+        if (member.getStreakCount() > 0) {
+            sb.append("\n🔥 Streak: ").append(member.getStreakCount()).append(" days");
+        }
+
+        whatsApp.sendText(phone, sb.toString().trim());
     }
 
     public void myPayment(String phone, Member member) {
@@ -78,27 +146,60 @@ public class MemberService {
                 "Status: " + member.getPaymentStatus());
     }
 
-    public void myRank(String phone, Member member) {
-        whatsApp.sendText(phone,
-                "🥋 Belt: " + member.getBeltRank() + "\n" +
-                "📅 Member since: " + (member.getJoinDate() != null ? member.getJoinDate().toString() : "N/A"));
+    public void schedule(String phone, String text) {
+        String[] parts = text.trim().split("\\s+");
+        String arg = parts.length > 1 ? parts[1].toLowerCase() : "";
+
+        if ("week".equals(arg) || "all".equals(arg)) {
+            scheduleWeek(phone);
+        } else {
+            scheduleToday(phone);
+        }
     }
 
-    public void schedule(String phone) {
+    private void scheduleToday(String phone) {
+        LocalDate today  = LocalDate.now(zoneId);
+        int isoDay       = today.getDayOfWeek().getValue(); // 1=Mon … 7=Sun
+        String dayName   = DAY_NAMES[isoDay];
+
+        List<GymClass> classes = gymClassRepo.findByDayOfWeekAndIsActiveTrue(isoDay);
+
+        if (classes.isEmpty()) {
+            whatsApp.sendText(phone,
+                "📅 No classes today (" + dayName + "). Rest day — see you tomorrow! 💪\n\nFull week: /schedule week");
+            return;
+        }
+
+        StringBuilder sb = new StringBuilder("📅 *Today's Classes — " + dayName + "*\n\n");
+        classes.stream()
+               .sorted((a, b) -> a.getClassTime().compareTo(b.getClassTime()))
+               .forEach(gc -> {
+                   sb.append("🕐 ").append(gc.getClassTime())
+                     .append(" – ").append(gc.getClassEndTime())
+                     .append("  |  ").append(gc.getClassName());
+                   if (gc.getCoach() != null) sb.append(" (").append(gc.getCoach()).append(")");
+                   sb.append("\n");
+               });
+        sb.append("\nFull week: /schedule week");
+        whatsApp.sendText(phone, sb.toString().trim());
+    }
+
+    private void scheduleWeek(String phone) {
         List<GymClass> classes = gymClassRepo.findByIsActiveTrueOrderByDayOfWeekAscClassTimeAsc();
         if (classes.isEmpty()) {
             whatsApp.sendText(phone, "No classes scheduled. Contact admin.");
             return;
         }
-        StringBuilder sb = new StringBuilder("📅 *Weekly Schedule*\n\n");
+        StringBuilder sb = new StringBuilder("📅 *Weekly Schedule*\n");
         int lastDay = -1;
         for (GymClass gc : classes) {
             if (gc.getDayOfWeek() != lastDay) {
                 sb.append("\n*").append(DAY_NAMES[gc.getDayOfWeek()]).append("*\n");
                 lastDay = gc.getDayOfWeek();
             }
-            sb.append("  ").append(gc.getClassTime()).append(" — ")
-              .append(gc.getClassName());
+            sb.append("  ").append(gc.getClassTime())
+              .append(" – ").append(gc.getClassEndTime())
+              .append("  ").append(gc.getClassName());
             if (gc.getCoach() != null) sb.append(" (").append(gc.getCoach()).append(")");
             sb.append("\n");
         }
@@ -170,11 +271,13 @@ public class MemberService {
                 "🥊 *MMA Gym Bot Commands*\n\n" +
                 "/checkin — Mark today's attendance\n" +
                 "/mystats — This month's attendance stats\n" +
-                "/streak — Your current attendance streak\n" +
+                "/streak — Your current streak + shield status\n" +
                 "/mypayment — Plan info and expiry date\n" +
-                "/myrank — Belt rank and join date\n" +
-                "/schedule — This week's class schedule\n" +
-                "/progress log [kg] [type] [val] [notes] — Log a session\n" +
+                "/schedule — Today's classes\n" +
+                "/schedule week — Full weekly timetable\n" +
+                "/weight [kg] — Log your weight\n" +
+                "/weight history — See last 5 weight entries\n" +
+                "/progress log [kg] [type] [val] [notes] — Log a training metric\n" +
                 "/progress view — See your last 10 entries\n" +
                 "/help — Show this message");
     }

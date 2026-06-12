@@ -44,9 +44,23 @@ public record WebhookPayload(
             String from,
             String type,
             Text text,
+            Interactive interactive,
             Long timestamp
     ) {}
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record Text(String body) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record Interactive(
+            String type,
+            @JsonProperty("list_reply")   ListReply listReply,
+            @JsonProperty("button_reply") ButtonReply buttonReply
+    ) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ListReply(String id, String title) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ButtonReply(String id, String title) {}
 }

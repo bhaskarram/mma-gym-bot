@@ -7,8 +7,8 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "attendance", uniqueConstraints = @UniqueConstraint(name = "uq_member_date", columnNames = {"member_id", "class_date"}))
-public class Attendance {
+@Table(name = "class_feedback")
+public class ClassFeedback {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
@@ -17,27 +17,13 @@ public class Attendance {
     private Member member;
     @Column(nullable = false)
     private LocalDate classDate;
-    @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
-    private AttendanceStatus status = AttendanceStatus.PRESENT;
-    @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
-    private MarkedBy markedBy = MarkedBy.SELF;
     @Column(length = 50)
     private String classType;
+    @Column(nullable = false, columnDefinition = "TINYINT")
+    private int rating; // 1=Tough, 2=Good, 3=Easy
     @CreationTimestamp
     @Column(nullable = false, updatable = false)
     private LocalDateTime createdAt;
-
-
-    public enum AttendanceStatus {
-        PRESENT, ABSENT, LATE;
-    }
-
-
-    public enum MarkedBy {
-        SELF, ADMIN, QR;
-    }
 
     @java.lang.SuppressWarnings("all")
     @lombok.Generated
@@ -59,20 +45,14 @@ public class Attendance {
 
     @java.lang.SuppressWarnings("all")
     @lombok.Generated
-    public AttendanceStatus getStatus() {
-        return this.status;
-    }
-
-    @java.lang.SuppressWarnings("all")
-    @lombok.Generated
-    public MarkedBy getMarkedBy() {
-        return this.markedBy;
-    }
-
-    @java.lang.SuppressWarnings("all")
-    @lombok.Generated
     public String getClassType() {
         return this.classType;
+    }
+
+    @java.lang.SuppressWarnings("all")
+    @lombok.Generated
+    public int getRating() {
+        return this.rating;
     }
 
     @java.lang.SuppressWarnings("all")
@@ -101,20 +81,14 @@ public class Attendance {
 
     @java.lang.SuppressWarnings("all")
     @lombok.Generated
-    public void setStatus(final AttendanceStatus status) {
-        this.status = status;
-    }
-
-    @java.lang.SuppressWarnings("all")
-    @lombok.Generated
-    public void setMarkedBy(final MarkedBy markedBy) {
-        this.markedBy = markedBy;
-    }
-
-    @java.lang.SuppressWarnings("all")
-    @lombok.Generated
     public void setClassType(final String classType) {
         this.classType = classType;
+    }
+
+    @java.lang.SuppressWarnings("all")
+    @lombok.Generated
+    public void setRating(final int rating) {
+        this.rating = rating;
     }
 
     @java.lang.SuppressWarnings("all")
